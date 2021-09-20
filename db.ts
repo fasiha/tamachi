@@ -74,8 +74,11 @@ export async function createUser(db: Db, name: string, cleartextPass: string): P
  * Doesn't do anything if `name` doesn't exist.
  */
 export async function resetPassword_DANGEROUS(db: Db, name: string, newCleartextPass: string) {
-  const {hashed, salt} = await secret.hash(newCleartextPass);
-  const res = db.prepare('update user set hashed=$hashed, salt=$salt where name is $name').run({hashed, salt, name});
+  const hashedDict = await secret.hash(newCleartextPass);
+  const res =
+      db.prepare(
+            'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
+          .run({...hashedDict, name});
   console.info('resetPassword_DANGEROUS', res);
 }
 
@@ -99,12 +102,24 @@ export async function authenticate(db: Db, name: string, cleartextPass: string):
 
 if (require.main === module) {
   (async function() {
+    var assert = require('assert');
     const db = init('tamachi.db');
     await createUser(db, 'ahmed', 'whee');
     await resetPassword_DANGEROUS(db, 'ahmed', 'whoo');
     await resetPassword_DANGEROUS(db, '__', 'whoo');
-    console.log(await authenticate(db, 'ahmed', 'whee'))
-    console.log(await authenticate(db, 'ahmed', 'whoo'))
-    console.log(await authenticate(db, 'qqq', 'qqq'))
+    assert(await authenticate(db, 'ahmed', 'whee') === false)
+    assert(await authenticate(db, 'ahmed', 'whoo') === true)
+    assert(await authenticate(db, 'qqq', 'qqq') === false)
+
+    {
+      const name = 'ahmed';
+      const hashedDict = await secret.hash('well', {salt: 's', keylen: 32, iterations: 1000, digest: 'sha1'});
+      db.prepare(
+            'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
+          .run({...hashedDict, name});
+      assert(await authenticate(db, 'ahmed', 'well') === true);
+      assert(await authenticate(db, 'ahmed', 'x') === false);
+      assert(await authenticate(db, 'z', 'x') === false);
+    }
   })();
 }
