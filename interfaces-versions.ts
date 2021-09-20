@@ -5,8 +5,6 @@ export namespace v1 {
   export const User = t.type({
     id: t.number,
     name: t.string,
-    // hashed: t.string,
-    // salt: t.string,
   });
 
   export const Ruby = t.type({rt: t.string, ruby: t.string});
@@ -14,9 +12,14 @@ export namespace v1 {
 
   export const Sentence = t.type({
     id: t.number,
-    // ja: t.string,
     ja: t.array(Word),
     en: t.string,
+  });
+
+  export const Story = t.type({
+    id: t.number,
+    title: t.string,
+    sentences: t.array(Sentence),
   });
 
   export const Audio = t.type({

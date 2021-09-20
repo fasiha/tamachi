@@ -6,6 +6,9 @@ create table sentence (id INTEGER PRIMARY KEY, ja text not null, en text not nul
 
 create table audio (id INTEGER PRIMARY KEY, sentenceId number not null, language text not null, speaker text not null, base64 text not null);
 
+create table story (id INTEGER PRIMARY KEY, title text not null);
+create table linkstorysentence (id INTEGER PRIMARY KEY, sentenceId number not null, storyId number not null, lino string not null);
+
 create table review (id INTEGER PRIMARY KEY, userId number not null, sentenceId number not null, epoch number not null, results text not null);
 
 insert into _tamachi_db_state (schemaVersion) values (1);
