@@ -50,66 +50,68 @@ export function init(fname: string) {
   return db;
 }
 
-export async function createUser(db: Db, name: string, cleartextPass: string): Promise<sqlite3.RunResult|undefined> {
-  const hashedDict = await secret.hash(cleartextPass);
-  try {
+export namespace user {
+  export async function createUser(db: Db, name: string, cleartextPass: string): Promise<sqlite3.RunResult|undefined> {
+    const hashedDict = await secret.hash(cleartextPass);
+    try {
+      const res =
+          db.prepare(
+                'insert into user (name, hashed, salt, iterations, keylen, digest) values ($name, $hashed, $salt, $iterations, $keylen, $digest)')
+              .run({...hashedDict, name});
+      console.info('createUser', res);
+      return res;
+    } catch (e) {
+      if (e instanceof sqlite3.SqliteError && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        console.log(`createUser: couldn't create user, constraint check failed`)
+        return undefined;
+      }
+      console.error(`createUser: couldn't create user, unknown error`);
+      throw e;
+    }
+  }
+
+  /**
+   * Resets the password without checking that you know it, hence dangerous.
+   * Doesn't do anything if `name` doesn't exist.
+   */
+  export async function resetPassword_DANGEROUS(db: Db, name: string, newCleartextPass: string) {
+    const hashedDict = await secret.hash(newCleartextPass);
     const res =
         db.prepare(
-              'insert into user (name, hashed, salt, iterations, keylen, digest) values ($name, $hashed, $salt, $iterations, $keylen, $digest)')
+              'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
             .run({...hashedDict, name});
-    console.info('createUser', res);
-    return res;
-  } catch (e) {
-    if (e instanceof sqlite3.SqliteError && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      console.log(`createUser: couldn't create user, constraint check failed`)
-      return undefined;
+    console.info('resetPassword_DANGEROUS', res);
+  }
+
+  export async function authenticate(db: Db, name: string, cleartextPass: string): Promise<boolean> {
+    const row: secret.HashedData|undefined =
+        db.prepare('select hashed, salt, iterations, keylen, digest from user where name = $name').get({name});
+    if (row) {
+      // `secret.hash` doesn't use `hashed` but I feel better not giving this to it
+      const withoutHash: secret.Metadata = {
+        salt: row.salt,
+        keylen: row.keylen,
+        iterations: row.iterations,
+        digest: row.digest,
+      };
+      const {hashed: hashedSubmission} = await secret.hash(cleartextPass, withoutHash);
+
+      return hashedSubmission === row.hashed;
     }
-    console.error(`createUser: couldn't create user, unknown error`);
-    throw e;
+    return false;
   }
-}
-
-/**
- * Resets the password without checking that you know it, hence dangerous.
- * Doesn't do anything if `name` doesn't exist.
- */
-export async function resetPassword_DANGEROUS(db: Db, name: string, newCleartextPass: string) {
-  const hashedDict = await secret.hash(newCleartextPass);
-  const res =
-      db.prepare(
-            'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
-          .run({...hashedDict, name});
-  console.info('resetPassword_DANGEROUS', res);
-}
-
-export async function authenticate(db: Db, name: string, cleartextPass: string): Promise<boolean> {
-  const row: secret.HashedData|undefined =
-      db.prepare('select hashed, salt, iterations, keylen, digest from user where name = $name').get({name});
-  if (row) {
-    // `secret.hash` doesn't use `hashed` but I feel better not giving this to it
-    const withoutHash: secret.Metadata = {
-      salt: row.salt,
-      keylen: row.keylen,
-      iterations: row.iterations,
-      digest: row.digest,
-    };
-    const {hashed: hashedSubmission} = await secret.hash(cleartextPass, withoutHash);
-
-    return hashedSubmission === row.hashed;
-  }
-  return false;
 }
 
 if (require.main === module) {
   (async function() {
     var assert = require('assert');
     const db = init('tamachi.db');
-    await createUser(db, 'ahmed', 'whee');
-    await resetPassword_DANGEROUS(db, 'ahmed', 'whoo');
-    await resetPassword_DANGEROUS(db, '__', 'whoo');
-    assert(await authenticate(db, 'ahmed', 'whee') === false)
-    assert(await authenticate(db, 'ahmed', 'whoo') === true)
-    assert(await authenticate(db, 'qqq', 'qqq') === false)
+    await user.createUser(db, 'ahmed', 'whee');
+    await user.resetPassword_DANGEROUS(db, 'ahmed', 'whoo');
+    await user.resetPassword_DANGEROUS(db, '__', 'whoo');
+    assert(await user.authenticate(db, 'ahmed', 'whee') === false)
+    assert(await user.authenticate(db, 'ahmed', 'whoo') === true)
+    assert(await user.authenticate(db, 'qqq', 'qqq') === false)
 
     {
       const name = 'ahmed';
@@ -117,9 +119,9 @@ if (require.main === module) {
       db.prepare(
             'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
           .run({...hashedDict, name});
-      assert(await authenticate(db, 'ahmed', 'well') === true);
-      assert(await authenticate(db, 'ahmed', 'x') === false);
-      assert(await authenticate(db, 'z', 'x') === false);
+      assert(await user.authenticate(db, 'ahmed', 'well') === true);
+      assert(await user.authenticate(db, 'ahmed', 'x') === false);
+      assert(await user.authenticate(db, 'z', 'x') === false);
     }
   })();
 }
