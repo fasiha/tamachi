@@ -13,10 +13,17 @@ export namespace v1 {
   export const Words = t.array(Word);
   export type Words = t.TypeOf<typeof Words>;
 
+  export const Audio = t.type({
+    language: t.string,
+    speaker: t.string,
+    base64: t.string,
+  });
+
   export const Sentence = t.type({
     id: t.number,
     ja: Words,
     en: t.string,
+    audio: t.type({en: t.array(Audio), ja: t.array(Audio)}),
   });
   export type Sentence = t.TypeOf<typeof Sentence>;
 
@@ -31,14 +38,6 @@ export namespace v1 {
     WithMeta,
   ]);
   export type Story = t.TypeOf<typeof Story>;
-
-  export const Audio = t.type({
-    id: t.number,
-    sentenceId: t.number,
-    language: t.string,
-    speaker: t.string,
-    base64: t.string,
-  });
 
   export const Review = t.type({
     id: t.number,

@@ -107,6 +107,8 @@ export namespace sentence {
   type JSONEnc = string;
   type Link = {sentenceId: number, ja: JSONEnc, en: string, idx: string};
 
+  const noAudio: i.Sentence['audio'] = {en: [], ja: []};
+
   export function getOrCreateStory(db: Db, title: string): i.Story|undefined {
     const _meta: Meta = {lexIdxs: []};
     const storyRow = db.prepare('select * from story where title=$title').get({title});
@@ -120,7 +122,12 @@ export namespace sentence {
         where linkstorysentence.storyId=$storyId
         order by linkstorysentence.idx`)
               .all({storyId: storyRow.id});
-      story.sentences = links.map(row => ({id: row.sentenceId, en: row.en, ja: JSON.parse(row.ja).map(deserialize)}));
+      story.sentences = links.map(row => ({
+                                    id: row.sentenceId,
+                                    en: row.en,
+                                    ja: JSON.parse(row.ja).map(deserialize),
+                                    audio: noAudio,
+                                  }));
       _meta.lexIdxs = links.map(l => l.idx);
       return story;
     }
@@ -155,7 +162,7 @@ export namespace sentence {
     // between '' and '', i.e., over the whole lexicographic range of base62, because it doesn't know that there's a
     // left-hand bookend.
 
-    const sentences: i.Sentence[] = lines.map(({ja, en}) => ({ja, en, id: -1}))
+    const sentences: i.Sentence[] = lines.map(({ja, en}) => ({ja, en, id: -1, audio: noAudio}))
 
     // Let's update the story object first: its array of sentences
     const deletedSentences = story.sentences.splice(startIdx, deleteCount, ...sentences);
