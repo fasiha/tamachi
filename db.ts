@@ -147,7 +147,7 @@ export namespace sentence {
     return typeof word === 'string' ? word : {ruby: word[0], rt: word[1]};
   }
 
-  export function addSentences(db: Db, story: i.Story, startIdx: number, lines: JaEn[]): i.Story {
+  export function addSentences(db: Db, story: i.Story, startIdx: number, deleteCount: number, lines: JaEn[]): i.Story {
     // `startIdx` will be used with `Array.splice` below, whose API for starts greater than the length of the array is
     // to append to the end. This enforces that API via Mudder:
     startIdx = Math.min(startIdx, story.sentences.length);
@@ -158,14 +158,14 @@ export namespace sentence {
     const sentences: i.Sentence[] = lines.map(({ja, en}) => ({ja, en, id: -1}))
 
     // Let's update the story object first: its array of sentences
-    story.sentences.splice(startIdx, 0, ...sentences);
+    const deletedSentences = story.sentences.splice(startIdx, deleteCount, ...sentences);
 
     // Update the story object's metadata, containing the sort order indexes via Mudder
     const meta = story._meta as Meta;
     const leftIdx = meta.lexIdxs[startIdx - 1] || ''; // yes, if `startIdx===0`, this will be '' for Mudder
     const rightIdx = meta.lexIdxs[startIdx] || '';    // and even if there's no sentences, this will be ''
     const newIdxs = base62.mudder(leftIdx, rightIdx, lines.length);
-    meta.lexIdxs.splice(startIdx, 0, ...newIdxs);
+    const deletedIdxs = meta.lexIdxs.splice(startIdx, deleteCount, ...newIdxs);
 
     // Now let's write to the db.
 
@@ -197,6 +197,15 @@ export namespace sentence {
 
       // Add the sentence id: this comes from the db, overwriting the above initialization of -1
       sentences[i].id = sentenceId;
+    }
+
+    // Take care of deleted links
+    if (deleteCount > 0) {
+      const deleter =
+          db.prepare('delete from linkstorysentence where storyId=$storyId and sentenceId=$sentenceId and idx=$idx');
+      for (const [i, s] of deletedSentences.entries()) {
+        deleter.run({sentenceId: s.id, storyId: story.id, idx: deletedIdxs[i]})
+      }
     }
 
     return story;
@@ -231,7 +240,7 @@ if (require.main === module) {
       console.dir(story, {depth: null});
 
       if (story) {
-        story = sentence.addSentences(db, story, 0, [
+        story = sentence.addSentences(db, story, 0, 0, [
           {ja: ['x'], en: 'x'},
           {ja: ['z'], en: 'z'},
           {ja: ['x'], en: 'x'},
@@ -245,7 +254,7 @@ if (require.main === module) {
       console.log('init')
       console.dir(story, {depth: null});
       if (story) {
-        sentence.addSentences(db, story, 99999, [
+        sentence.addSentences(db, story, 99999, 0, [
           {ja: ['owari'], en: 'the end'},
           {ja: ['lol'], en: 'lol'},
         ]);
@@ -253,6 +262,20 @@ if (require.main === module) {
         console.dir(story, {depth: null});
       }
     }
-    {}
+    {
+      const story = sentence.getOrCreateStory(db, "Nail");
+      console.log('init')
+      console.dir(story, {depth: null});
+      if (story) {
+        sentence.addSentences(db, story, story.sentences.length - 1, 100, []);
+        console.log('after removing')
+        console.dir(story, {depth: null});
+      }
+    }
+    {
+      const story = sentence.getOrCreateStory(db, "Nail");
+      console.log('init')
+      console.dir(story, {depth: null});
+    }
   })();
 }
