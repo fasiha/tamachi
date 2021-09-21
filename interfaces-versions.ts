@@ -9,18 +9,28 @@ export namespace v1 {
 
   export const Ruby = t.type({rt: t.string, ruby: t.string});
   export const Word = t.union([Ruby, t.string]);
+  export type Word = t.TypeOf<typeof Word>;
+  export const Words = t.array(Word);
+  export type Words = t.TypeOf<typeof Words>;
 
   export const Sentence = t.type({
     id: t.number,
-    ja: t.array(Word),
+    ja: Words,
     en: t.string,
   });
+  export type Sentence = t.TypeOf<typeof Sentence>;
 
-  export const Story = t.type({
-    id: t.number,
-    title: t.string,
-    sentences: t.array(Sentence),
-  });
+  // for db-only things (like sort)
+  const WithMeta = t.type({_meta: t.unknown});
+  export const Story = t.intersection([
+    t.type({
+      id: t.number,
+      title: t.string,
+      sentences: t.array(Sentence),
+    }),
+    WithMeta,
+  ]);
+  export type Story = t.TypeOf<typeof Story>;
 
   export const Audio = t.type({
     id: t.number,

@@ -11,6 +11,7 @@
   "license": "ISC",
   "devDependencies": {
     "@types/better-sqlite3": "^7.4.0",
+    "@types/mudder": "^1.0.0",
     "@types/node": "^16.9.2",
     "clang-format": "^1.5.0",
     "typescript": "^4.4.3"
@@ -18,6 +19,7 @@
   "dependencies": {
     "better-sqlite3": "^7.4.3",
     "fp-ts": "^2.11.2",
-    "io-ts": "^2.2.16"
+    "io-ts": "^2.2.16",
+    "mudder": "^1.0.10"
   }
 }
