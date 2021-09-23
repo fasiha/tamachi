@@ -4,6 +4,7 @@ import {readFileSync} from 'fs';
 import {base62} from 'mudder';
 import {promisify} from 'util';
 
+import {PREFERRED_ENGLISH_VOICES, PREFERRED_JAPANESE_VOICES, textToAudioBase64} from './audio';
 import {i} from './interfaces';
 
 type Db = ReturnType<typeof sqlite3>;
@@ -105,7 +106,7 @@ export namespace user {
 export namespace sentence {
   type Meta = {lexIdxs: string[]};
   type JSONEnc = string;
-  type Link = {sentenceId: number, ja: JSONEnc, en: string, idx: string};
+  type Link = {sentenceId: number, ja: JSONEnc, jaHint: string, en: string, idx: string};
 
   const noAudio: i.Sentence['audio'] = {en: [], ja: []};
 
@@ -116,7 +117,8 @@ export namespace sentence {
       // story exists. Don't write anything to db, just read.
       const story: i.Story = {id: storyRow.id, title: storyRow.title, sentences: [], _meta};
       const links: Link[] =
-          db.prepare(`select linkstorysentence.sentenceId, linkstorysentence.idx, sentence.ja, sentence.en
+          db.prepare(
+                `select linkstorysentence.sentenceId, linkstorysentence.idx, sentence.ja, sentence.en, sentence.jaHint
         from linkstorysentence inner join sentence
         on linkstorysentence.sentenceId = sentence.id
         where linkstorysentence.storyId=$storyId
@@ -126,6 +128,7 @@ export namespace sentence {
                                     id: row.sentenceId,
                                     en: row.en,
                                     ja: JSON.parse(row.ja).map(deserialize),
+                                    jaHint: row.jaHint,
                                     audio: noAudio,
                                   }));
       _meta.lexIdxs = links.map(l => l.idx);
@@ -148,13 +151,14 @@ export namespace sentence {
     }
   }
 
-  type JaEn = {ja: i.Words, en: string};
+  type JaEn = {ja: i.Words, en: string, jaHint: string};
   function serialize(word: i.Word): string|string[] { return typeof word === 'string' ? word : [word.ruby, word.rt]; }
   function deserialize(word: string|string[]): i.Word {
     return typeof word === 'string' ? word : {ruby: word[0], rt: word[1]};
   }
 
-  export function addSentences(db: Db, story: i.Story, startIdx: number, deleteCount: number, lines: JaEn[]): i.Story {
+  export async function addSentences(db: Db, story: i.Story, startIdx: number, deleteCount: number,
+                                     lines: JaEn[]): Promise<i.Story> {
     // `startIdx` will be used with `Array.splice` below, whose API for starts greater than the length of the array is
     // to append to the end. This enforces that API via Mudder:
     startIdx = Math.min(startIdx, story.sentences.length);
@@ -162,7 +166,7 @@ export namespace sentence {
     // between '' and '', i.e., over the whole lexicographic range of base62, because it doesn't know that there's a
     // left-hand bookend.
 
-    const sentences: i.Sentence[] = lines.map(({ja, en}) => ({ja, en, id: -1, audio: noAudio}))
+    const sentences: i.Sentence[] = lines.map(({ja, en, jaHint}) => ({ja, jaHint, en, id: -1, audio: noAudio}));
 
     // Let's update the story object first: its array of sentences
     const deletedSentences = story.sentences.splice(startIdx, deleteCount, ...sentences);
@@ -176,21 +180,27 @@ export namespace sentence {
 
     // Now let's write to the db.
 
+    const sentenceIdxNeedingAudio: number[] = []; // not id! Hopefully not confusing
+
     // given that we got a `i.Story`, that means it has an `id` which means it's been inserted into db
 
     // one of the lines might already be in the db
-    const insertSentence = db.prepare('insert or ignore into sentence (ja, en) values ($ja, $en)');
+    const insertSentence = db.prepare('insert or ignore into sentence (ja, en, jaHint) values ($ja, $en, $jaHint)');
     const selectSelectence = db.prepare('select id from sentence where ja=$ja and en=$en');
     const link =
         db.prepare('insert into linkstorysentence (sentenceId, storyId, idx) values ($sentenceId, $storyId, $idx)');
     for (const [i, {ja: jaOrig, en}] of sentences.entries()) {
       // Make sure sentence is in db
-      const jaEn = {ja: JSON.stringify(jaOrig.map(serialize)), en};
+      const jaEn = {ja: JSON.stringify(jaOrig.map(serialize)), en, jaHint: audio.sentenceToPlainJapanese(jaOrig)};
       const res = insertSentence.run(jaEn);
+      console.log('1', res)
       let sentenceId = -1;
       if (res.changes) {
+        // successful insert!
         sentenceId = Number(res.lastInsertRowid); // lose bigint
+        sentenceIdxNeedingAudio.push(i);
       } else {
+        // sentence didn't insert, it's already there
         const res = selectSelectence.get(jaEn);
         if (typeof res === 'object' && 'id' in res) {
           sentenceId = res.id;
@@ -215,12 +225,41 @@ export namespace sentence {
       }
     }
 
+    // Finally, add audio as needed
+    await audio.addAudio(db, sentenceIdxNeedingAudio.map(i => sentences[i]));
+
     return story;
+  }
+}
+
+namespace audio {
+  require('dotenv').config();
+  const aws_region = process.env['aws_region'];
+  const aws_access_key_id = process.env['aws_access_key_id'];
+  const aws_secret_access_key = process.env['aws_secret_access_key'];
+  console.log({aws_region, aws_access_key_id, aws_secret_access_key})
+  if(!(aws_region && aws_access_key_id && aws_secret_access_key)) {
+    throw new Error('cannot create audio: invalid .env or missing environment variables');
+  }
+  const aws = {aws_region, aws_access_key_id, aws_secret_access_key};
+
+  export function sentenceToPlainJapanese(words: i.Sentence['ja']): string {
+    return words.map(w => typeof w === 'string' ? w : w.ruby).join('');
+  }
+
+  export async function addAudio(db: Db, sentences: i.Sentence[]) {
+    // const insert = db.prepare('insert into audio ')
+    for (const s of sentences) {
+      for (const voice of PREFERRED_JAPANESE_VOICES) {
+        // const base64 = textToAudioBase64({...aws, text: s.jaHint, voice: voice.name, engine: voice.engine}); // TODO
+      }
+    }
   }
 }
 
 if (require.main === module) {
   (async function() {
+    require('dotenv').config();
     var assert = require('assert');
     const db = init('tamachi.db');
     await user.createUser(db, 'ahmed', 'whee');
@@ -247,40 +286,40 @@ if (require.main === module) {
       console.dir(story, {depth: null});
 
       if (story) {
-        story = sentence.addSentences(db, story, 0, 0, [
-          {ja: ['x'], en: 'x'},
-          {ja: ['z'], en: 'z'},
-          {ja: ['x'], en: 'x'},
+        story = await sentence.addSentences(db, story, 0, 0, [
+          {ja: ['x'], en: 'x', jaHint: 'x'},
+          {ja: ['z'], en: 'z', jaHint: 'z'},
+          {ja: ['x'], en: 'x', jaHint: 'x'},
         ]);
         console.log('after adding')
         console.dir(story, {depth: null});
       }
     }
     {
-      const story = sentence.getOrCreateStory(db, "Nail");
+      let story = sentence.getOrCreateStory(db, "Nail");
       console.log('init')
       console.dir(story, {depth: null});
       if (story) {
-        sentence.addSentences(db, story, 99999, 0, [
-          {ja: ['owari'], en: 'the end'},
-          {ja: ['lol'], en: 'lol'},
+        story = await sentence.addSentences(db, story, 99999, 0, [
+          {ja: ['owari'], en: 'the end', jaHint: 'owari'},
+          {ja: ['lol'], en: 'lol', jaHint: 'w'},
         ]);
         console.log('after adding')
         console.dir(story, {depth: null});
       }
     }
     {
-      const story = sentence.getOrCreateStory(db, "Nail");
+      let story = sentence.getOrCreateStory(db, "Nail");
       console.log('init')
       console.dir(story, {depth: null});
       if (story) {
-        sentence.addSentences(db, story, story.sentences.length - 1, 100, []);
+        story = await sentence.addSentences(db, story, story.sentences.length - 1, 100, []);
         console.log('after removing')
         console.dir(story, {depth: null});
       }
     }
     {
-      const story = sentence.getOrCreateStory(db, "Nail");
+      let story = sentence.getOrCreateStory(db, "Nail");
       console.log('init')
       console.dir(story, {depth: null});
     }

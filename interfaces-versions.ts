@@ -17,11 +17,13 @@ export namespace v1 {
     language: t.string,
     speaker: t.string,
     base64: t.string,
+    created: t.number,
   });
 
   export const Sentence = t.type({
     id: t.number,
     ja: Words,
+    jaHint: t.string,
     en: t.string,
     audio: t.type({en: t.array(Audio), ja: t.array(Audio)}),
   });
