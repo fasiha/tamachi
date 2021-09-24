@@ -1,13 +1,29 @@
 import sqlite3 from 'better-sqlite3';
 import crypto from 'crypto';
 import {readFileSync} from 'fs';
+import * as t from 'io-ts';
 import {base62} from 'mudder';
 import {promisify} from 'util';
 
 import {PREFERRED_ENGLISH_VOICES, PREFERRED_JAPANESE_VOICES, textToAudioBase64} from './audio';
+import * as Table from './DbTables';
 import {i} from './interfaces';
 
 type Db = ReturnType<typeof sqlite3>;
+
+/**
+ * We need someting like `Selected` because sql-ts emits my tables' `id` as `null|number` because I don't have to
+ * specify an `INTEGER PRIMARY KEY` when *inserting*, asSQLite will make it for me. However, when *selecting*, the
+ * `INTEGER PRIMARY KEY` field *will* be present.
+ *
+ * This could also be:
+ * ```
+ * type Selected<T> = Required<{[k in keyof T]: NonNullable<T[k]>}>|undefined;
+ * ```
+ * The above says "*All* keys are required and non-nullable". But I think it's better to just use our knowledge that
+ * `id` is the only column thus affected, as below. If we ever add more nullable columns, the following is safer:
+ */
+type Selected<T> = (T&{id: number})|undefined;
 
 namespace secret {
   const randomBytes = promisify(crypto.randomBytes);
@@ -17,8 +33,8 @@ namespace secret {
   const KEYLEN = 32;
   const DIGEST = 'sha1';
 
-  export type Metadata = {salt: string, iterations: number, keylen: number, digest: string};
-  export type HashedData = Metadata&{hashed: string};
+  type Metadata = {salt: string, iterations: number, keylen: number, digest: string};
+  type HashedData = Metadata&{hashed: string};
   export async function hash(clear: string, {salt = '', iterations = ITERATIONS, keylen = KEYLEN, digest = DIGEST}:
                                                 Partial<Metadata> = {}): Promise<HashedData> {
     salt = salt || (await randomBytes(SALTLEN)).toString('base64url');
@@ -55,10 +71,15 @@ export namespace user {
   export async function createUser(db: Db, name: string, cleartextPass: string): Promise<sqlite3.RunResult|undefined> {
     const hashedDict = await secret.hash(cleartextPass);
     try {
+      const userEntity: Table.userRow = {...hashedDict, name};
       const res =
           db.prepare(
                 'insert into user (name, hashed, salt, iterations, keylen, digest) values ($name, $hashed, $salt, $iterations, $keylen, $digest)')
-              .run({...hashedDict, name});
+              .run(userEntity);
+      /*
+      Nota bene how I'm not concerned with typos in the string, e.g., "$nmae": better-sqlite3 will
+      catch those, saying `Missing named parameter "nmae"` at runtime.
+      */
       console.info('createUser', res);
       return res;
     } catch (e) {
@@ -77,25 +98,25 @@ export namespace user {
    */
   export async function resetPassword_DANGEROUS(db: Db, name: string, newCleartextPass: string) {
     const hashedDict = await secret.hash(newCleartextPass);
+    const userEntity: Table.userRow = {...hashedDict, name};
     const res =
         db.prepare(
               'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
-            .run({...hashedDict, name});
+            .run(userEntity);
     console.info('resetPassword_DANGEROUS', res);
   }
 
   export async function authenticate(db: Db, name: string, cleartextPass: string): Promise<boolean> {
-    const row: secret.HashedData|undefined =
+    const row: Selected<Table.userRow> =
         db.prepare('select hashed, salt, iterations, keylen, digest from user where name = $name').get({name});
     if (row) {
       // `secret.hash` doesn't use `hashed` but I feel better not giving this to it
-      const withoutHash: secret.Metadata = {
+      const {hashed: hashedSubmission} = await secret.hash(cleartextPass, {
         salt: row.salt,
         keylen: row.keylen,
         iterations: row.iterations,
         digest: row.digest,
-      };
-      const {hashed: hashedSubmission} = await secret.hash(cleartextPass, withoutHash);
+      });
 
       return hashedSubmission === row.hashed;
     }
@@ -105,17 +126,24 @@ export namespace user {
 
 export namespace sentence {
   type Meta = {lexIdxs: string[]};
-  type JSONEnc = string;
-  type Link = {sentenceId: number, ja: JSONEnc, jaHint: string, en: string, idx: string};
+  const Link = t.type({sentenceId: t.number, ja: t.string, jaHint: t.string, en: t.string, idx: t.string});
+  type Link = t.TypeOf<typeof Link>;
 
   const noAudio: i.Sentence['audio'] = {en: [], ja: []};
 
   export function getOrCreateStory(db: Db, title: string): i.Story|undefined {
     const _meta: Meta = {lexIdxs: []};
-    const storyRow = db.prepare('select * from story where title=$title').get({title});
+    const storyRow: Selected<Table.storyRow> = db.prepare('select * from story where title=$title').get({title});
     if (storyRow) {
       // story exists. Don't write anything to db, just read.
       const story: i.Story = {id: storyRow.id, title: storyRow.title, sentences: [], _meta};
+      // Note above we've assumed the db returned the expected shape of the data.
+      // We can't io-ts this easily because io-ts needs to define types in its format,
+      // it can't take an existing TypeScript interface as input. But I think this is ok.
+      // By discipline if we insert only formats that conform to the types inferred by
+      // sql-ts (in `Database.ts`), we can be reasonably sure raw SELECTs will be ok.
+      // However, the following join might return an unexpected shape if we typo the query!
+      // So we'll io-ts-ify that.
       const links: Link[] =
           db.prepare(
                 `select linkstorysentence.sentenceId, linkstorysentence.idx, sentence.ja, sentence.en, sentence.jaHint
@@ -124,19 +152,33 @@ export namespace sentence {
         where linkstorysentence.storyId=$storyId
         order by linkstorysentence.idx`)
               .all({storyId: storyRow.id});
-      story.sentences = links.map(row => ({
-                                    id: row.sentenceId,
-                                    en: row.en,
-                                    ja: JSON.parse(row.ja).map(deserialize),
-                                    jaHint: row.jaHint,
-                                    audio: noAudio,
-                                  }));
+      for (const row of links) {
+        /*
+        This is how io-ts works: you `decode`, then the result is an `Either`.
+        By convention, the Either's `_tag` is Right or Left, meaning decoded or not.
+        fp-ts has nice helper functions for this, in case this is too esoreric.
+        */
+        const decoded = Link.decode(row);
+        if (decoded._tag === 'Right') {
+          const link = decoded.right;
+          story.sentences.push({
+            id: row.sentenceId,
+            en: row.en,
+            ja: JSON.parse(row.ja).map(deserialize),
+            jaHint: row.jaHint,
+            audio: noAudio,
+          })
+        } else {
+          throw new Error('link failed to decode as expected');
+        }
+      }
       _meta.lexIdxs = links.map(l => l.idx);
       return story;
     }
     // story doesn't exist. Create it.
     try {
-      const res = db.prepare('insert into story (title) values ($title)').run({title})
+      const row: Table.storyRow = {title};
+      const res = db.prepare('insert into story (title) values ($title)').run(row)
       if (res.changes) {
         const story: i.Story = {id: Number(res.lastInsertRowid), title, sentences: [], _meta};
         return story;
@@ -186,12 +228,13 @@ export namespace sentence {
 
     // one of the lines might already be in the db
     const insertSentence = db.prepare('insert or ignore into sentence (ja, en, jaHint) values ($ja, $en, $jaHint)');
-    const selectSelectence = db.prepare('select id from sentence where ja=$ja and en=$en');
-    const link =
+    const selectSentence = db.prepare('select id from sentence where ja=$ja and en=$en');
+    const insertLink =
         db.prepare('insert into linkstorysentence (sentenceId, storyId, idx) values ($sentenceId, $storyId, $idx)');
     for (const [i, {ja: jaOrig, en}] of sentences.entries()) {
       // Make sure sentence is in db
-      const jaEn = {ja: JSON.stringify(jaOrig.map(serialize)), en, jaHint: audio.sentenceToPlainJapanese(jaOrig)};
+      const jaEn: Table
+          .sentenceRow = {ja: JSON.stringify(jaOrig.map(serialize)), en, jaHint: audio.sentenceToPlainJapanese(jaOrig)};
       const res = insertSentence.run(jaEn);
       console.log('1', res)
       let sentenceId = -1;
@@ -201,8 +244,8 @@ export namespace sentence {
         sentenceIdxNeedingAudio.push(i);
       } else {
         // sentence didn't insert, it's already there
-        const res = selectSelectence.get(jaEn);
-        if (typeof res === 'object' && 'id' in res) {
+        const res: Selected<Table.sentenceRow> = selectSentence.get(jaEn);
+        if (res) {
           sentenceId = res.id;
         } else {
           throw new Error('sentence failed to insert and select?')
@@ -210,7 +253,8 @@ export namespace sentence {
       }
 
       // Add the link in the db
-      link.run({sentenceId, storyId: story.id, idx: newIdxs[i]});
+      const link: Table.linkstorysentenceRow = {sentenceId, storyId: story.id, idx: newIdxs[i]};
+      insertLink.run(link);
 
       // Add the sentence id: this comes from the db, overwriting the above initialization of -1
       sentences[i].id = sentenceId;
@@ -221,7 +265,8 @@ export namespace sentence {
       const deleter =
           db.prepare('delete from linkstorysentence where storyId=$storyId and sentenceId=$sentenceId and idx=$idx');
       for (const [i, s] of deletedSentences.entries()) {
-        deleter.run({sentenceId: s.id, storyId: story.id, idx: deletedIdxs[i]})
+        const row: Table.linkstorysentenceRow = {sentenceId: s.id, storyId: story.id, idx: deletedIdxs[i]};
+        deleter.run(row)
       }
     }
 
@@ -272,9 +317,10 @@ if (require.main === module) {
     {
       const name = 'ahmed';
       const hashedDict = await secret.hash('well', {salt: 's', keylen: 32, iterations: 1000, digest: 'sha1'});
+      const row: Table.userRow = {...hashedDict, name};
       db.prepare(
             'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
-          .run({...hashedDict, name});
+          .run(row);
       assert(await user.authenticate(db, 'ahmed', 'well') === true);
       assert(await user.authenticate(db, 'ahmed', 'x') === false);
       assert(await user.authenticate(db, 'z', 'x') === false);
