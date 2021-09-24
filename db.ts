@@ -48,9 +48,6 @@ namespace secret {
 }
 
 export function init(fname: string) {
-  interface DbState {
-    schemaVersion: number;
-  }
   const db = sqlite3(fname);
 
   let s = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`);
@@ -59,9 +56,8 @@ export function init(fname: string) {
   if (tableThere) {
     // ensure it's the correct version, else bail; implement up/down migration later
     s = db.prepare(`select schemaVersion from _tamachi_db_state`);
-    const dbState: DbState = s.get();
-    console.log(dbState)
-    if (dbState.schemaVersion !== i.version) {
+    const dbState: Selected<Table._tamachi_db_stateRow> = s.get();
+    if (!dbState || dbState.schemaVersion !== i.version) {
       throw new Error('migrations not yet supported');
     }
   } else {
@@ -240,7 +236,6 @@ export namespace sentence {
       const jaEn:
           Table.sentenceRow = {ja: JSON.stringify(jaOrig.map(serialize)), en, jaHint: sentenceToPlainJapanese(jaOrig)};
       const res = insertSentence.run(jaEn);
-      console.log('1', res)
       let sentenceId = -1;
       if (res.changes) {
         // successful insert!
@@ -292,7 +287,6 @@ namespace audio {
   const aws_region = process.env['aws_region'];
   const aws_access_key_id = process.env['aws_access_key_id'];
   const aws_secret_access_key = process.env['aws_secret_access_key'];
-  console.log({aws_region, aws_access_key_id, aws_secret_access_key})
   if(!(aws_region && aws_access_key_id && aws_secret_access_key)) {
     throw new Error('cannot create audio: invalid .env or missing environment variables');
   }
