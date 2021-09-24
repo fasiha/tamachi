@@ -20,8 +20,9 @@ create table audio (
   sentenceId integer not null,
   language text not null,
   speaker text not null,
-  base64 text not null,
-  created integer not null
+  base64 text unique not null,
+  created float not null,
+  unique (sentenceId, language, speaker)
 );
 create table story (id INTEGER PRIMARY KEY, title text unique not null);
 create table linkstorysentence (

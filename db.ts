@@ -25,6 +25,10 @@ type Db = ReturnType<typeof sqlite3>;
  */
 type Selected<T> = (T&{id: number})|undefined;
 
+function uniqueConstraintError(e: unknown): boolean {
+  return e instanceof sqlite3.SqliteError && e.code === 'SQLITE_CONSTRAINT_UNIQUE';
+}
+
 namespace secret {
   const randomBytes = promisify(crypto.randomBytes);
   const pbkdf2 = promisify(crypto.pbkdf2);
@@ -83,7 +87,7 @@ export namespace user {
       console.info('createUser', res);
       return res;
     } catch (e) {
-      if (e instanceof sqlite3.SqliteError && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      if (uniqueConstraintError(e)) {
         console.log(`createUser: couldn't create user, constraint check failed`)
         return undefined;
       }
@@ -184,7 +188,7 @@ export namespace sentence {
         return story;
       }
     } catch (e) {
-      if (e instanceof sqlite3.SqliteError && e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      if (uniqueConstraintError(e)) {
         console.error('getOrCreateStory: failed to insert due to constraint, race condition? retry');
         return undefined;
       }
@@ -233,8 +237,8 @@ export namespace sentence {
         db.prepare('insert into linkstorysentence (sentenceId, storyId, idx) values ($sentenceId, $storyId, $idx)');
     for (const [i, {ja: jaOrig, en}] of sentences.entries()) {
       // Make sure sentence is in db
-      const jaEn: Table
-          .sentenceRow = {ja: JSON.stringify(jaOrig.map(serialize)), en, jaHint: audio.sentenceToPlainJapanese(jaOrig)};
+      const jaEn:
+          Table.sentenceRow = {ja: JSON.stringify(jaOrig.map(serialize)), en, jaHint: sentenceToPlainJapanese(jaOrig)};
       const res = insertSentence.run(jaEn);
       console.log('1', res)
       let sentenceId = -1;
@@ -270,10 +274,16 @@ export namespace sentence {
       }
     }
 
-    // Finally, add audio as needed
-    await audio.addAudio(db, sentenceIdxNeedingAudio.map(i => sentences[i]));
+    // We could add audio to all new sentences here but since that costs money (AWS Polly), let's only do that when
+    // users explicitly ask for audio
+    // E.g., `await audio.addAudio(db, sentenceIdxNeedingAudio.map(i => sentences[i]));`
+    console.log(`addSentences: ${sentenceIdxNeedingAudio.length} missing audio`)
 
     return story;
+  }
+
+  export function sentenceToPlainJapanese(words: i.Sentence['ja']): string {
+    return words.map(w => typeof w === 'string' ? w : w.ruby).join('');
   }
 }
 
@@ -288,15 +298,37 @@ namespace audio {
   }
   const aws = {aws_region, aws_access_key_id, aws_secret_access_key};
 
-  export function sentenceToPlainJapanese(words: i.Sentence['ja']): string {
-    return words.map(w => typeof w === 'string' ? w : w.ruby).join('');
-  }
-
   export async function addAudio(db: Db, sentences: i.Sentence[]) {
-    // const insert = db.prepare('insert into audio ')
+    const insert = db.prepare(
+        'insert into audio (sentenceId, language, speaker, base64, created) values ($sentenceId, $language, $speaker, $base64, $created)');
+    const update = db.prepare('update audio set base64=$base64 where id=$id');
     for (const s of sentences) {
-      for (const voice of PREFERRED_JAPANESE_VOICES) {
-        // const base64 = textToAudioBase64({...aws, text: s.jaHint, voice: voice.name, engine: voice.engine}); // TODO
+      for (const voice of PREFERRED_JAPANESE_VOICES.concat(PREFERRED_ENGLISH_VOICES)) {
+        const row: Table.audioRow = {
+          base64: "",
+          sentenceId: s.id,
+          speaker: `${voice.name} ${voice.engine}`,
+          language: voice.language,
+          created: Date.now()
+        };
+        try {
+          // insert with blank base64, ensure no unique constraints aren't broken
+          const res = insert.run(row);
+          if (res.changes) {
+            // and only THEN spend money on AWS Polly
+            const text = voice.language === 'ja' ? s.jaHint : s.en;
+            row.base64 = await textToAudioBase64({...aws, text, voice: voice.name, engine: voice.engine});
+            // update
+            update.run({base64: row.base64, id: res.lastInsertRowid});
+          }
+        } catch (e) {
+          if (uniqueConstraintError(e)) {
+            console.log('addAudio: this mp3 already exists, skipping');
+            continue;
+          } else {
+            throw e;
+          }
+        }
       }
     }
   }
