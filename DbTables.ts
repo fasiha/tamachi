@@ -3,27 +3,27 @@
 * Rerun sql-ts to regenerate this file.
 */
 export interface _tamachi_db_stateRow {
-  "schemaVersion": any 
+  "schemaVersion": number 
 }
 export interface audioRow {
   "id"?: number | null 
-  "sentenceId": any 
+  "sentenceId": number 
   "language": string 
   "speaker": string 
   "base64": string 
-  "created": any 
+  "created": number 
 }
 export interface linkstorysentenceRow {
   "id"?: number | null 
-  "sentenceId": any 
-  "storyId": any 
-  "idx": any 
+  "sentenceId": number 
+  "storyId": number 
+  "idx": string 
 }
 export interface reviewRow {
   "id"?: number | null 
-  "userId": any 
-  "sentenceId": any 
-  "epoch": any 
+  "userId": number 
+  "sentenceId": number 
+  "epoch": number 
   "results": string 
 }
 export interface sentenceRow {
@@ -41,7 +41,7 @@ export interface userRow {
   "name": string 
   "hashed": string 
   "salt": string 
-  "iterations": any 
-  "keylen": any 
+  "iterations": number 
+  "keylen": number 
   "digest": string 
 }
