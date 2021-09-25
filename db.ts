@@ -349,13 +349,14 @@ export namespace review {
       console.log('all', rows);
     }
     {
-      // Get the most recent review for all sentences that have been reviewed
-      const rows:
-          Table.reviewRow[] = db.prepare(
-                                    `select id, sentenceId, ($now - created) / halflife logprob, max(created) maxcreated
+      // get the sentence MOST needing review
+      const rows: Table.reviewRow[] =
+          db.prepare(`select id, sentenceId, ($now - created) / halflife logprob, max(created) maxcreated
 from review
 where userId=$userId
-group by userId, sentenceId`).all({userId: user.id, now: Date.now()});
+group by userId, sentenceId
+order by logprob desc
+limit 1`).all({userId: user.id, now: Date.now()});
       console.log('latest', rows)
     }
   }
