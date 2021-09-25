@@ -23,8 +23,10 @@ export interface reviewRow {
   "id"?: number | null 
   "userId": number 
   "sentenceId": number 
-  "epoch": number 
-  "results": string 
+  "created": number 
+  "result": string 
+  "ebisu": string 
+  "halflife": number 
 }
 export interface sentenceRow {
   "id"?: number | null 

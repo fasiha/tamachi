@@ -106,9 +106,8 @@ export namespace user {
     console.info('resetPassword_DANGEROUS', res);
   }
 
-  export async function authenticate(db: Db, name: string, cleartextPass: string): Promise<boolean> {
-    const row: Selected<Table.userRow> =
-        db.prepare('select hashed, salt, iterations, keylen, digest from user where name = $name').get({name});
+  export async function authenticate(db: Db, name: string, cleartextPass: string): Promise<i.User|undefined> {
+    const row: Selected<Table.userRow> = db.prepare('select * from user where name = $name').get({name});
     if (row) {
       // `secret.hash` doesn't use `hashed` but I feel better not giving this to it
       const {hashed: hashedSubmission} = await secret.hash(cleartextPass, {
@@ -118,9 +117,9 @@ export namespace user {
         digest: row.digest,
       });
 
-      return hashedSubmission === row.hashed;
+      return hashedSubmission === row.hashed ? {id: row.id, name} : undefined;
     }
-    return false;
+    return undefined;
   }
 }
 
@@ -282,7 +281,7 @@ export namespace sentence {
   }
 }
 
-namespace audio {
+export namespace audio {
   require('dotenv').config();
   const aws_region = process.env['aws_region'];
   const aws_access_key_id = process.env['aws_access_key_id'];
@@ -328,6 +327,40 @@ namespace audio {
   }
 }
 
+export namespace review {
+  export function reviewed(db: Db, user: i.User, sentence: i.Sentence, result: i.ReviewResult) {
+    const row: Table.reviewRow = {
+      userId: user.id,
+      sentenceId: sentence.id,
+      created: Date.now(),
+      result: JSON.stringify(result),
+      ebisu: '',
+      halflife: Math.random()
+    };
+    const res =
+        db.prepare(
+              'insert into review (userId, sentenceId, created,result,ebisu,halflife) values ($userId, $sentenceId, $created, $result, $ebisu, $halflife)')
+            .run(row);
+  }
+
+  export function toReview(db: Db, user: i.User) {
+    {
+      const rows: Table.reviewRow[] = db.prepare('select id, sentenceId from review ').all();
+      console.log('all', rows);
+    }
+    {
+      // Get the most recent review for all sentences that have been reviewed
+      const rows:
+          Table.reviewRow[] = db.prepare(
+                                    `select id, sentenceId, ($now - created) / halflife logprob, max(created) maxcreated
+from review
+where userId=$userId
+group by userId, sentenceId`).all({userId: user.id, now: Date.now()});
+      console.log('latest', rows)
+    }
+  }
+}
+
 if (require.main === module) {
   (async function() {
     require('dotenv').config();
@@ -336,9 +369,9 @@ if (require.main === module) {
     await user.createUser(db, 'ahmed', 'whee');
     await user.resetPassword_DANGEROUS(db, 'ahmed', 'whoo');
     await user.resetPassword_DANGEROUS(db, '__', 'whoo');
-    assert(await user.authenticate(db, 'ahmed', 'whee') === false)
-    assert(await user.authenticate(db, 'ahmed', 'whoo') === true)
-    assert(await user.authenticate(db, 'qqq', 'qqq') === false)
+    assert(await user.authenticate(db, 'ahmed', 'whee') === undefined)
+    assert(await user.authenticate(db, 'ahmed', 'whoo') !== undefined)
+    assert(await user.authenticate(db, 'qqq', 'qqq') === undefined)
 
     {
       const name = 'ahmed';
@@ -347,9 +380,9 @@ if (require.main === module) {
       db.prepare(
             'update user set hashed=$hashed, salt=$salt, iterations=$iterations, keylen=$keylen, digest=$digest where name is $name')
           .run(row);
-      assert(await user.authenticate(db, 'ahmed', 'well') === true);
-      assert(await user.authenticate(db, 'ahmed', 'x') === false);
-      assert(await user.authenticate(db, 'z', 'x') === false);
+      assert(await user.authenticate(db, 'ahmed', 'well') !== undefined);
+      assert(await user.authenticate(db, 'ahmed', 'x') === undefined);
+      assert(await user.authenticate(db, 'z', 'x') === undefined);
     }
 
     {
@@ -394,6 +427,29 @@ if (require.main === module) {
       let story = sentence.getOrCreateStory(db, "Nail");
       console.log('init')
       console.dir(story, {depth: null});
+    }
+    {
+      const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+      const story = sentence.getOrCreateStory(db, "Nail");
+      const ahmed = await user.authenticate(db, 'ahmed', 'well');
+      if (story && ahmed) {
+        console.log({story, ahmed})
+        const rev: i.ReviewResult = {initial: true, type: 'quizresult', value: 1};
+        review.reviewed(db, ahmed, story.sentences[0], rev);
+        await sleep(100);
+        review.reviewed(db, ahmed, story.sentences[1], rev);
+        await sleep(100);
+        review.reviewed(db, ahmed, story.sentences[0], rev);
+        await sleep(100);
+        review.reviewed(db, ahmed, story.sentences[1], rev);
+        await sleep(100);
+        review.reviewed(db, ahmed, story.sentences[0], rev);
+        await sleep(100);
+        review.reviewed(db, ahmed, story.sentences[0], rev);
+
+        review.toReview(db, ahmed);
+      }
     }
   })();
 }

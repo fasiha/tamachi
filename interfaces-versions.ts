@@ -6,6 +6,7 @@ export namespace v1 {
     id: t.number,
     name: t.string,
   });
+  export type User = t.TypeOf<typeof User>;
 
   export const Ruby = t.type({rt: t.string, ruby: t.string});
   export const Word = t.union([Ruby, t.string]);
@@ -41,13 +42,24 @@ export namespace v1 {
   ]);
   export type Story = t.TypeOf<typeof Story>;
 
+  export const ReviewType = t.union([t.literal('quizresult'), t.literal('probability')]);
+  export const ReviewResult = t.type({
+    initial: t.boolean,
+    type: ReviewType,
+    value: t.number,
+  });
   export const Review = t.type({
     id: t.number,
     userId: t.number,
     sentenceId: t.number,
-    epoch: t.number,
-    results: t.unknown,
+    created: t.number,
+    result: ReviewResult,
+    ebisu: t.array(t.number),
+    halflife: t.number,
   });
+  export type Review = t.TypeOf<typeof Review>;
+  export type ReviewResult = t.TypeOf<typeof ReviewResult>;
+  export type ReviewType = t.TypeOf<typeof ReviewType>;
 }
 
 export namespace vDemo {

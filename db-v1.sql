@@ -35,8 +35,11 @@ create table review (
   id INTEGER PRIMARY KEY,
   userId integer not null,
   sentenceId integer not null,
-  epoch integer not null,
-  results text not null
+  created float not null,
+  result text not null, -- JSON
+  ebisu text not null, -- JSON
+  halflife float not null,
+  unique (userId, sentenceId, created)
 );
 insert into
   _tamachi_db_state (schemaVersion)
