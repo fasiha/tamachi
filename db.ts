@@ -130,6 +130,11 @@ export namespace sentence {
 
   const noAudio: i.Sentence['audio'] = {en: [], ja: []};
 
+  export function getSentence(db: Db, sentenceId: number): undefined|i.Sentence {
+    const row: Selected<Table.sentenceRow> = db.prepare('select * from sentence where id=?').get(sentenceId);
+    return row ? {...row, ja: JSON.parse(row.ja).map(deserialize), audio: noAudio} : undefined;
+  }
+
   export function getOrCreateStory(db: Db, title: string): i.Story|undefined {
     const _meta: Meta = {lexIdxs: []};
     const storyRow: Selected<Table.storyRow> = db.prepare('select * from story where title=$title').get({title});
@@ -343,26 +348,55 @@ export namespace review {
             .run(row);
   }
 
-  export function toReview(db: Db, user: i.User) {
-    {
-      const rows: Table.reviewRow[] = db.prepare('select id, sentenceId from review ').all();
-      console.log('all', rows);
-    }
-    {
-      // get the sentence MOST needing review
-      const rows: Table.reviewRow[] =
-          db.prepare(`select id, sentenceId, ($now - created) / halflife logprob, max(created) maxcreated
+  const ForReview = t.type({id: t.number, sentenceId: t.number, neglogprob: t.number, maxcreated: t.number});
+  type ForReview = t.TypeOf<typeof ForReview>;
+  export function toReview(db: Db, user: i.User): i.Sentence|undefined {
+    // get the sentence MOST needing review
+    const row = db.prepare(`select id, sentenceId, ($now - created) / halflife neglogprob, max(created) maxcreated
 from review
 where userId=$userId
 group by userId, sentenceId
-order by logprob desc
-limit 1`).all({userId: user.id, now: Date.now()});
-      console.log('latest', rows)
+order by neglogprob desc
+limit 1`).get({userId: user.id, now: Date.now()});
+    if (row) {
+      const decoded = ForReview.decode(row);
+      if (decoded._tag === 'Right') {
+        const right = decoded.right;
+        return sentence.getSentence(db, right.sentenceId);
+      }
+      throw new Error('returned row failed to decode?')
     }
+    return undefined;
   }
 }
 
 if (require.main === module) {
+  function groupBy<T, U>(f: (t: T) => U, v: T[]): Map<U, T[]> {
+    const ret = new Map();
+    for (const x of v) {
+      const y = f(x);
+      if (ret.has(y)) {
+        ret.get(y).push(x);
+      } else {
+        ret.set(y, [x]);
+      }
+    }
+    return ret;
+  }
+  function maxBy<T>(f: (t: T) => number, v: T[]): undefined|T {
+    if (v.length === 0) {
+      return undefined;
+    }
+    let ret = v[0];
+    let y = f(ret);
+    for (let i = 1; i < v.length; ++i) {
+      const thisy = f(v[i]);
+      if (thisy > y) {
+        ret = v[i];
+      }
+    }
+    return ret;
+  }
   (async function() {
     require('dotenv').config();
     var assert = require('assert');
@@ -449,7 +483,12 @@ if (require.main === module) {
         await sleep(100);
         review.reviewed(db, ahmed, story.sentences[0], rev);
 
-        review.toReview(db, ahmed);
+        const rows: (Table.reviewRow&{neglogprob: number})[] =
+            db.prepare('select *, (? - created) / halflife neglogprob from review ').all(Date.now());
+        console.log('maxTime',
+                    Array.from(groupBy(r => r.sentenceId, rows), ([k, v]) => ({[k]: maxBy(x => x.created, v)})));
+        const sentence = review.toReview(db, ahmed);
+        console.log(sentence)
       }
     }
   })();
