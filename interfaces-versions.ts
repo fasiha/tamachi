@@ -20,6 +20,7 @@ export namespace v1 {
     base64: t.string,
     created: t.number,
   });
+  export type Audio = t.TypeOf<typeof Audio>;
 
   export const Sentence = t.type({
     id: t.number,

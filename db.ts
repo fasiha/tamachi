@@ -125,14 +125,23 @@ export namespace user {
 
 export namespace sentence {
   type Meta = {lexIdxs: string[]};
-  const Link = t.type({sentenceId: t.number, ja: t.string, jaHint: t.string, en: t.string, idx: t.string});
-  type Link = t.TypeOf<typeof Link>;
-
-  const noAudio: i.Sentence['audio'] = {en: [], ja: []};
 
   export function getSentence(db: Db, sentenceId: number): undefined|i.Sentence {
     const row: Selected<Table.sentenceRow> = db.prepare('select * from sentence where id=?').get(sentenceId);
-    return row ? {...row, ja: JSON.parse(row.ja).map(deserialize), audio: noAudio} : undefined;
+    const audioRows: Table.audioRow[] = db.prepare(`select * from audio where sentenceId=?`).all(sentenceId);
+    const audio: (i.Sentence)['audio'] = {en: [], ja: []};
+    for (const row of audioRows) {
+      if (row.language === 'ja' || row.language === 'en') {
+        const thisAudio: i.Audio = {
+          language: row.language,
+          speaker: row.speaker,
+          base64: row.base64,
+          created: row.created,
+        };
+        audio[row.language].push(thisAudio);
+      }
+    }
+    return row ? {...row, ja: JSON.parse(row.ja).map(deserialize), audio} : undefined;
   }
 
   export function getOrCreateStory(db: Db, title: string): i.Story|undefined {
@@ -141,40 +150,14 @@ export namespace sentence {
     if (storyRow) {
       // story exists. Don't write anything to db, just read.
       const story: i.Story = {id: storyRow.id, title: storyRow.title, sentences: [], _meta};
-      // Note above we've assumed the db returned the expected shape of the data.
-      // We can't io-ts this easily because io-ts needs to define types in its format,
-      // it can't take an existing TypeScript interface as input. But I think this is ok.
-      // By discipline if we insert only formats that conform to the types inferred by
-      // sql-ts (in `Database.ts`), we can be reasonably sure raw SELECTs will be ok.
-      // However, the following join might return an unexpected shape if we typo the query!
-      // So we'll io-ts-ify that.
-      const links: Link[] =
-          db.prepare(
-                `select linkstorysentence.sentenceId, linkstorysentence.idx, sentence.ja, sentence.en, sentence.jaHint
-        from linkstorysentence inner join sentence
-        on linkstorysentence.sentenceId = sentence.id
-        where linkstorysentence.storyId=$storyId
-        order by linkstorysentence.idx`)
-              .all({storyId: storyRow.id});
+      const links: (NonNullable<Selected<Table.linkstorysentenceRow>>)[] =
+          db.prepare(`select * from linkstorysentence where storyId=? order by idx`).all(storyRow.id);
       for (const row of links) {
-        /*
-        This is how io-ts works: you `decode`, then the result is an `Either`.
-        By convention, the Either's `_tag` is Right or Left, meaning decoded or not.
-        fp-ts has nice helper functions for this, in case this is too esoreric.
-        */
-        const decoded = Link.decode(row);
-        if (decoded._tag === 'Right') {
-          const link = decoded.right;
-          story.sentences.push({
-            id: row.sentenceId,
-            en: row.en,
-            ja: JSON.parse(row.ja).map(deserialize),
-            jaHint: row.jaHint,
-            audio: noAudio,
-          })
-        } else {
-          throw new Error('link failed to decode as expected');
+        const sentence = getSentence(db, row.sentenceId);
+        if (!sentence) {
+          throw new Error(`story refers to nonexistent sentenceId ${row.sentenceId}`)
         }
+        story.sentences.push(sentence);
       }
       _meta.lexIdxs = links.map(l => l.idx);
       return story;
@@ -212,6 +195,7 @@ export namespace sentence {
     // between '' and '', i.e., over the whole lexicographic range of base62, because it doesn't know that there's a
     // left-hand bookend.
 
+    const noAudio: i.Sentence['audio'] = {en: [], ja: []};
     const sentences: i.Sentence[] = lines.map(({ja, en, jaHint}) => ({ja, jaHint, en, id: -1, audio: noAudio}));
 
     // Let's update the story object first: its array of sentences
@@ -490,6 +474,27 @@ if (require.main === module) {
         const sentence = review.toReview(db, ahmed);
         console.log(sentence)
       }
+    }
+    {
+      let story = sentence.getOrCreateStory(db, "Nail");
+      if (story) {
+        const row: Table.audioRow = {
+          base64: "audio:x",
+          sentenceId: story.sentences[0].id,
+          speaker: `Takumi standard`,
+          language: 'ja',
+          created: Date.now()
+        };
+        const s = db.prepare(
+            'insert into audio (sentenceId, language, speaker, base64, created) values ($sentenceId, $language, $speaker, $base64, $created)');
+        s.run(row);
+        row.speaker = 'Jackie neural';
+        row.language = 'en';
+        row.base64 = 'audio:enx'
+        s.run(row);
+      }
+      story = sentence.getOrCreateStory(db, "Nail");
+      console.dir(story, {depth: null})
     }
   })();
 }
