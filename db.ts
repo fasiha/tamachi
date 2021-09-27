@@ -298,6 +298,7 @@ export namespace audio {
           const res = insert.run(row);
           if (res.changes) {
             // and only THEN spend money on AWS Polly
+            console.warn('addAudio calling AWS Polly');
             const text = voice.language === 'ja' ? s.jaHint : s.en;
             row.base64 = await textToAudioBase64({...aws, text, voice: voice.name, engine: voice.engine});
             // update
