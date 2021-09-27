@@ -25,6 +25,7 @@
     "@aws-sdk/client-polly": "^3.33.0",
     "better-sqlite3": "^7.4.3",
     "dotenv": "^10.0.0",
+    "ebisu-js": "^2.0.0",
     "fp-ts": "^2.11.2",
     "io-ts": "^2.2.16",
     "mudder": "^1.1.0"

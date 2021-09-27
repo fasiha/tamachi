@@ -1,5 +1,6 @@
 import sqlite3 from 'better-sqlite3';
 import crypto from 'crypto';
+import * as ebisu from 'ebisu-js';
 import {readFileSync} from 'fs';
 import * as t from 'io-ts';
 import {base62} from 'mudder';
@@ -318,15 +319,35 @@ export namespace audio {
 }
 
 export namespace review {
-  export function reviewed(db: Db, user: i.User, sentence: i.Sentence, result: i.ReviewResult) {
+  const INITIAL_HALFLIFE_HOURS = 4.0;
+  const INITIAL_MODEL = [2.0, 2.0, INITIAL_HALFLIFE_HOURS];
+  const HOURS_PER_MILLISECOND = 1 / 3600e3;
+
+  export function reviewed(db: Db, user: i.User, sentence: i.Sentence, result: i.Result, now: number = Date.now()) {
+    if (!(result.type === 'quizresult' && result.subtype === 'binary')) {
+      throw new Error('unimplemented');
+    }
     const row: Table.reviewRow = {
       userId: user.id,
       sentenceId: sentence.id,
-      created: Date.now(),
+      created: now,
       result: JSON.stringify(result),
-      ebisu: '',
-      halflife: Math.random()
+      ebisu: JSON.stringify(INITIAL_MODEL),
+      halflife: INITIAL_HALFLIFE_HOURS,
     };
+    const previousReview: Pick<Table.reviewRow, 'ebisu'|'created'> =
+        db.prepare('select ebisu, created from review where sentenceId=$sentenceId order by created desc limit 1').get({
+          sentenceId: sentence.id
+        });
+    if (previousReview) {
+      const oldEbisu = JSON.parse(previousReview.ebisu);
+      const elapsedHours = (row.created - previousReview.created) * HOURS_PER_MILLISECOND;
+      const newEbisu = ebisu.updateRecall(oldEbisu, result.value, 1.0, elapsedHours);
+      row.ebisu = JSON.stringify(newEbisu);
+      const newHalflife = ebisu.modelToPercentileDecay(newEbisu, 0.5);
+      row.halflife = newHalflife;
+    }
+
     const res =
         db.prepare(
               'insert into review (userId, sentenceId, created,result,ebisu,halflife) values ($userId, $sentenceId, $created, $result, $ebisu, $halflife)')
@@ -336,8 +357,9 @@ export namespace review {
   const ForReview = t.type({id: t.number, sentenceId: t.number, neglogprob: t.number, maxcreated: t.number});
   type ForReview = t.TypeOf<typeof ForReview>;
   export function toReview(db: Db, user: i.User): i.Sentence|undefined {
-    // get the sentence MOST needing review
-    const row = db.prepare(`select id, sentenceId, ($now - created) / halflife neglogprob, max(created) maxcreated
+    // get the sentence MOST needing review.
+    const row = db.prepare(`select id, sentenceId, (($now - created) * ${
+                               HOURS_PER_MILLISECOND}) / halflife neglogprob, max(created) maxcreated
 from review
 where userId=$userId
 group by userId, sentenceId
@@ -455,11 +477,12 @@ if (require.main === module) {
       const ahmed = await user.authenticate(db, 'ahmed', 'well');
       if (story && ahmed) {
         console.log({story, ahmed})
-        const rev: i.ReviewResult = {initial: true, type: 'quizresult', value: 1};
+        const rev: i.Result = {initial: true, type: 'quizresult', subtype: 'binary', value: 1};
         review.reviewed(db, ahmed, story.sentences[0], rev);
         await sleep(100);
         review.reviewed(db, ahmed, story.sentences[1], rev);
         await sleep(100);
+        rev.initial = false;
         review.reviewed(db, ahmed, story.sentences[0], rev);
         await sleep(100);
         review.reviewed(db, ahmed, story.sentences[1], rev);
@@ -469,7 +492,9 @@ if (require.main === module) {
         review.reviewed(db, ahmed, story.sentences[0], rev);
 
         const rows: (Table.reviewRow&{neglogprob: number})[] =
-            db.prepare('select *, (? - created) / halflife neglogprob from review ').all(Date.now());
+            db.prepare('select *, ((? - created)*2.7777777777777776e-7) / halflife neglogprob from review ')
+                .all(Date.now() + 3600e3 * 4);
+        console.log('all reviews', rows);
         console.log('maxTime',
                     Array.from(groupBy(r => r.sentenceId, rows), ([k, v]) => ({[k]: maxBy(x => x.created, v)})));
         const sentence = review.toReview(db, ahmed);

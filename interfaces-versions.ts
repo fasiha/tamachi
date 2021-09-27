@@ -43,10 +43,12 @@ export namespace v1 {
   ]);
   export type Story = t.TypeOf<typeof Story>;
 
-  export const ReviewType = t.union([t.literal('quizresult'), t.literal('probability')]);
-  export const ReviewResult = t.type({
+  export const ResultType = t.union([t.literal('quizresult'), t.literal('probability')]);
+  export const ResultSubType = t.literal('binary');
+  export const Result = t.type({
     initial: t.boolean,
-    type: ReviewType,
+    type: ResultType,
+    subtype: ResultSubType,
     value: t.number,
   });
   export const Review = t.type({
@@ -54,13 +56,12 @@ export namespace v1 {
     userId: t.number,
     sentenceId: t.number,
     created: t.number,
-    result: ReviewResult,
+    result: Result,
     ebisu: t.array(t.number),
     halflife: t.number,
   });
   export type Review = t.TypeOf<typeof Review>;
-  export type ReviewResult = t.TypeOf<typeof ReviewResult>;
-  export type ReviewType = t.TypeOf<typeof ReviewType>;
+  export type Result = t.TypeOf<typeof Result>;
 }
 
 export namespace vDemo {
